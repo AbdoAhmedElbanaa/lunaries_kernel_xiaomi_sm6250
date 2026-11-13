@@ -1977,6 +1977,7 @@ static enum power_supply_property smb5_batt_props[] = {
 	POWER_SUPPLY_PROP_TIME_TO_FULL_NOW,
 	POWER_SUPPLY_PROP_FCC_STEPPER_ENABLE,
 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
+	POWER_SUPPLY_PROP_BATTERY_CHARGING_ENABLED,
 	POWER_SUPPLY_PROP_CHARGING_ENABLED,
 	POWER_SUPPLY_PROP_SYSTEM_TEMP_LEVEL,
 };
@@ -2026,6 +2027,7 @@ static int smb5_batt_get_prop(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_STEP_CHARGING_ENABLED:
 		val->intval = chg->step_chg_enabled;
 		break;
+	case POWER_SUPPLY_PROP_BATTERY_CHARGING_ENABLED:
 	case POWER_SUPPLY_PROP_CHARGING_ENABLED:
 		rc = smblib_get_prop_battery_charging_enabled(chg, val);
 		break;
@@ -2165,6 +2167,7 @@ static int smb5_batt_set_prop(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CAPACITY:
 		rc = smblib_set_prop_batt_capacity(chg, val);
 		break;
+	case POWER_SUPPLY_PROP_BATTERY_CHARGING_ENABLED:
 	case POWER_SUPPLY_PROP_CHARGING_ENABLED:
 		rc = smblib_set_prop_battery_charging_enabled(chg, val);
 		break;
@@ -2262,6 +2265,7 @@ static int smb5_batt_prop_is_writeable(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_RERUN_AICL:
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMITED:
 	case POWER_SUPPLY_PROP_STEP_CHARGING_ENABLED:
+	case POWER_SUPPLY_PROP_BATTERY_CHARGING_ENABLED:
 	case POWER_SUPPLY_PROP_CHARGING_ENABLED:
 	case POWER_SUPPLY_PROP_DIE_HEALTH:
 		return 1;
@@ -2282,6 +2286,53 @@ static const struct power_supply_desc batt_psy_desc = {
 	.property_is_writeable = smb5_batt_prop_is_writeable,
 };
 
+static ssize_t bypass_charging_show(struct device *dev,
+				    struct device_attribute *attr,
+				    char *buf)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct smb_charger *chg = power_supply_get_drvdata(psy);
+	union power_supply_propval val = {0, };
+	int rc;
+
+	if (!chg)
+		return -ENODEV;
+
+	rc = smblib_get_prop_battery_charging_enabled(chg, &val);
+	if (rc < 0)
+		return rc;
+
+	/* 1: bypass active (charging disabled), 0: normal charging */
+	return scnprintf(buf, PAGE_SIZE, "%d\n", val.intval ? 0 : 1);
+}
+
+static ssize_t bypass_charging_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct power_supply *psy = dev_get_drvdata(dev);
+	struct smb_charger *chg = power_supply_get_drvdata(psy);
+	union power_supply_propval val = {0, };
+	int bypass, rc;
+
+	if (!chg)
+		return -ENODEV;
+
+	if (kstrtoint(buf, 10, &bypass) < 0)
+		return -EINVAL;
+
+	/* 1 -> enable bypass (disable charging)
+	 * 0 -> disable bypass (enable charging)
+	 */
+	val.intval = bypass ? 0 : 1;
+	rc = smblib_set_prop_battery_charging_enabled(chg, &val);
+	if (rc < 0)
+		return rc;
+
+	return count;
+}
+static DEVICE_ATTR_RW(bypass_charging);
+
 static int smb5_init_batt_psy(struct smb5 *chip)
 {
 	struct power_supply_config batt_cfg = {};
@@ -2298,7 +2349,11 @@ static int smb5_init_batt_psy(struct smb5 *chip)
 		return PTR_ERR(chg->batt_psy);
 	}
 
-	return rc;
+	rc = device_create_file(&chg->batt_psy->dev, &dev_attr_bypass_charging);
+	if (rc < 0)
+		pr_err("Couldn't create bypass_charging sysfs node rc=%d\n", rc);
+
+	return 0;
 }
 
 /********************************

@@ -2413,6 +2413,13 @@ int smblib_get_prop_batt_status(struct smb_charger *chg,
 		}
 	}
 
+	/* User bypass charging active - report not charging */
+	if (chg->chg_disable_votable &&
+	    is_client_vote_enabled_locked(chg->chg_disable_votable, USER_VOTER)) {
+		val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
+		return 0;
+	}
+
 	switch (stat) {
 	case TRICKLE_CHARGE:
 	case PRE_CHARGE:
@@ -2704,6 +2711,12 @@ int smblib_get_prop_battery_charging_enabled(struct smb_charger *chg,
 {
 	int rc;
 	u8 reg;
+
+	if (chg->chg_disable_votable &&
+	    is_client_vote_enabled_locked(chg->chg_disable_votable, USER_VOTER)) {
+		val->intval = 0;
+		return 0;
+	}
 
 	rc = smblib_read(chg, CHARGING_ENABLE_CMD_REG, &reg);
 	if (rc < 0) {
@@ -3012,32 +3025,33 @@ static int smblib_therm_charging(struct smb_charger *chg)
 int smblib_set_prop_battery_charging_enabled(struct smb_charger *chg,
 			  const union power_supply_propval *val)
 {
-  int rc;
+	int rc = 0;
+	bool enable = !!val->intval;
 
-  smblib_dbg(chg, PR_MISC, "%s intval= %x\n",__FUNCTION__,val->intval);
+	smblib_dbg(chg, PR_MISC, "%s: set charging %s (val=%d)\n",
+		   __func__, enable ? "enabled" : "disabled (bypass)", val->intval);
 
-  if (1 == val->intval) {
-	  rc = smblib_masked_write(chg, CHARGING_ENABLE_CMD_REG,
-		  CHARGING_ENABLE_CMD_BIT,CHARGING_ENABLE_CMD_BIT);
-	  if (rc < 0) {
-		  smblib_err(chg, "Couldn't enable charging rc=%d\n",
-					  rc);
-		  return rc;
-	  }
-  }
-  else if (0 == val->intval) {
-	  rc = smblib_masked_write(chg, CHARGING_ENABLE_CMD_REG,
-		  CHARGING_ENABLE_CMD_BIT,0);
-	  if (rc < 0) {
-		  smblib_err(chg, "Couldn't disable charging rc=%d\n",
-					  rc);
-		  return rc;
-	  }
-  }
-  else
-	  smblib_err(chg, "Couldn't disable charging rc=%d\n",rc);
+	if (chg->chg_disable_votable) {
+		rc = vote(chg->chg_disable_votable, USER_VOTER, !enable, 0);
+		if (rc < 0) {
+			smblib_err(chg, "Couldn't vote to %s charging rc=%d\n",
+				   enable ? "enable" : "disable", rc);
+		}
+	}
 
-  return 0;
+	rc = smblib_masked_write(chg, CHARGING_ENABLE_CMD_REG,
+				 CHARGING_ENABLE_CMD_BIT,
+				 enable ? CHARGING_ENABLE_CMD_BIT : 0);
+	if (rc < 0) {
+		smblib_err(chg, "Couldn't %s charging rc=%d\n",
+			   enable ? "enable" : "disable", rc);
+		return rc;
+	}
+
+	if (chg->batt_psy)
+		power_supply_changed(chg->batt_psy);
+
+	return 0;
 }
 
 int smblib_set_prop_system_temp_level(struct smb_charger *chg,
